@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><title>VoxelCraft</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#87ceeb;font-family:system-ui,sans-serif;user-select:none}
+canvas#c{display:block;width:100%;height:100%}
+#menu{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;color:#fff;text-align:center}
+.box{background:#2b2b2b;border:3px solid #555;padding:24px 34px;border-radius:6px;max-width:440px}
+h1{margin:0 0 8px;letter-spacing:2px;color:#7fd34a}
+button{font-size:16px;padding:10px 18px;margin:5px;border:2px solid #222;border-radius:4px;cursor:pointer;background:#5a9e3a;color:#fff}
+button.alt{background:#4285f4}button.gray{background:#666}
+#cross{position:fixed;left:50%;top:50%;width:20px;height:20px;margin:-10px;pointer-events:none}
+#cross:before,#cross:after{content:"";position:absolute;background:#fff;mix-blend-mode:difference}
+#cross:before{left:9px;top:0;width:2px;height:20px}#cross:after{top:9px;left:0;height:2px;width:20px}
+#prog{position:fixed;left:50%;top:calc(50% + 20px);width:60px;height:5px;margin-left:-30px;background:#0006;display:none}
+#prog i{display:block;height:100%;width:0;background:#fff}
+#bar{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:3px;background:#0005;padding:4px;border:2px solid #222}
+.slot{position:relative;width:44px;height:44px;border:3px solid #444;box-sizing:border-box;background:#8b8b8b88}
+.slot.on{border-color:#fff}.slot canvas{width:100%;height:100%;image-rendering:pixelated}
+.slot b{position:absolute;left:2px;top:0;font-size:10px;color:#fff;text-shadow:0 0 2px #000}
+#hud{position:fixed;top:8px;left:10px;color:#fff;font-size:13px;line-height:1.5;text-shadow:1px 1px 2px #000}
+#name{position:fixed;bottom:70px;width:100%;text-align:center;color:#fff;text-shadow:1px 1px 2px #000}
+</style></head><body>
+<canvas id="c"></canvas><div id="cross"></div><div id="prog"><i></i></div><div id="name"></div><div id="bar"></div>
+<div id="hud"><span id="user">ゲスト</span> / <span id="status">未保存</span><br><span id="info"></span></div>
+<div id="menu"><div class="box">
+<h1>VOXELCRAFT</h1>
+<p style="font-size:13px;line-height:1.7">WASD:移動 Space:ジャンプ(泳ぐ) Shift:ダッシュ<br>左長押し:掘る 右クリック:置く<br>1〜0/ホイール:ブロック選択<br>F:飛行モード(Space上昇/Shift下降) Esc:メニュー</p>
+<button class="alt" id="login">Googleでログイン</button>
+<button class="gray" id="logout" style="display:none">ログアウト</button><br>
+<button id="play">ゲームを始める</button>
+<button class="gray" id="save">今すぐ保存</button>
+<p id="msg" style="font-size:12px;color:#ccc">ログインするとワールドが自動保存されます</p>
+</div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script>if(typeof firebase==="undefined")document.write('<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-app-compat.js"><\/script>')</script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script>if(!(window.firebase&&firebase.auth))document.write('<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-auth-compat.js"><\/script>')</script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>if(!(window.firebase&&firebase.firestore))document.write('<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-firestore-compat.js"><\/script>')</script>
+<script>
+const $=id=>document.getElementById(id), setStatus=t=>$('status').textContent=t;
+let auth=null,db=null,user=null,edits={},dirty=false;
+const FB_OK=!!(window.firebase&&firebase.auth&&firebase.firestore);
+if(FB_OK){firebase.initializeApp({apiKey:"AIzaSyDBqw6kx_1fMunXjmC79OfEPrtEwbk6CGM",authDomain:"task000.firebaseapp.com",projectId:"task000",storageBucket:"task000.firebasestorage.app",messagingSenderId:"776947135197",appId:"1:776947135197:web:11a0daad931efbfe41a134"});auth=firebase.auth();db=firebase.firestore();}
+
+// ---------- noise ----------
+const hs=(x,z)=>{let h=Math.imul(x|0,374761393)+Math.imul(z|0,668265263);h=Math.imul(h^(h>>>13),1274126177);return((h^(h>>>16))>>>0)/4294967295;};
+const sm=t=>t*t*(3-2*t);
+const vn=(x,z)=>{const xi=Math.floor(x),zi=Math.floor(z),fx=sm(x-xi),fz=sm(z-zi),a=hs(xi,zi),b=hs(xi+1,zi),c=hs(xi,zi+1),d=hs(xi+1,zi+1);return a+(b-a)*fx+(c-a)*fz+(a-b-c+d)*fx*fz;};
+const fbm=(x,z)=>vn(x/32,z/32)*.55+vn(x/16,z/16)*.3+vn(x/8,z/8)*.15;
+
+// ---------- textures (procedural pixel art) ----------
+function mkAtlas(){
+  const c=document.createElement('canvas');c.width=256;c.height=16;const g=c.getContext('2d');
+  const v=(k,r)=>1+(r-.5)*k;
+  const T=(t,f)=>{for(let y=0;y<16;y++)for(let x=0;x<16;x++){const q=f(x,y,hs(x+t*16,y*7+t));if(q){g.fillStyle=`rgba(${q[0]|0},${q[1]|0},${q[2]|0},${(q[3]??255)/255})`;g.fillRect(t*16+x,y,1,1);}}};
+  const gr=(x,y,r)=>[60*v(.5,r),150*v(.4,r),50*v(.5,r)], di=(x,y,r)=>[130*v(.4,r),90*v(.4,r),55*v(.4,r)];
+  T(0,gr);T(2,di);
+  T(1,(x,y,r)=>y<4+(r>.6?1:0)?gr(x,y,r):di(x,y,r));
+  T(3,(x,y,r)=>{const k=125*v(.3,r);return[k,k,k];});
+  T(4,(x,y,r)=>{const e=y%8===0||(x+(y>>3)*4)%8===0,k=(e?80:140)*v(.3,r);return[k,k,k];});
+  T(5,(x,y,r)=>{const k=v(.5,hs(x,3))*v(.2,r);return[100*k,75*k,40*k];});
+  T(6,(x,y,r)=>{const k=(Math.hypot(x-7.5,y-7.5)%5<2?.8:1)*v(.2,r);return[150*k,120*k,70*k];});
+  T(7,(x,y,r)=>{const k=(y%4===0?.75:1)*v(.2,r);return[170*k,130*k,80*k];});
+  T(8,(x,y,r)=>r<.25?null:[40*v(.6,r),120*v(.5,r),35*v(.6,r)]);
+  T(9,(x,y,r)=>[225*v(.1,r),210*v(.1,r),150*v(.1,r)]);
+  T(10,(x,y)=>x<1||y<1||x>14||y>14?[200,230,240]:(x+y)%9===0?[255,255,255,120]:null);
+  T(11,(x,y,r)=>[40,90,200*v(.15,r)]);
+  T(12,(x,y,r)=>{const e=y%4===0||(x+(y>>2)*4)%8===0,k=v(.2,r);return e?[190*k,185*k,175*k]:[160*k,60*k,45*k];});
+  return c;
+}
+const atlas=mkAtlas();
+const tex=new THREE.CanvasTexture(atlas);tex.magFilter=tex.minFilter=THREE.NearestFilter;
+
+// ---------- world ----------
+const W=96,H=48,CS=16,NC=W/CS,SEA=17;
+const B=new Uint8Array(W*H*W);
+const idx=(x,y,z)=>(y*W+z)*W+x;
+const NAME=['','草ブロック','土','石','丸石','原木','板材','葉','砂','ガラス','水','レンガ'];
+const TF=[0,[0,2,1],[2,2,2],[3,3,3],[4,4,4],[6,6,5],[7,7,7],[8,8,8],[9,9,9],[10,10,10],[11,11,11],[12,12,12]];
+const TR={7:1,9:1,10:1};
+const HARD=[0,.6,.5,1.5,1.5,1,.8,.2,.5,.3,0,1.5];
+const HB=[1,2,3,4,5,6,7,8,9,11];
+const blockAt=(x,y,z)=>(x<0||z<0||x>=W||z>=W||y<0||y>=H)?0:B[idx(x,y,z)];
+const solid=(x,y,z)=>{if(y<0)return true;if(y>=H)return false;if(x<0||z<0||x>=W||z>=W)return true;const b=B[idx(x,y,z)];return b!==0&&b!==10;};
+function genTerrain(){
+  B.fill(0);
+  for(let x=0;x<W;x++)for(let z=0;z<W;z++){
+    const h=Math.floor(6+fbm(x,z)*30), beach=h<=SEA+1;
+    for(let y=0;y<=h;y++)B[idx(x,y,z)]=y===h?(beach?8:1):y>h-4?(beach?8:2):3;
+    for(let y=h+1;y<=SEA;y++)B[idx(x,y,z)]=10;
+  }
+  for(let x=3;x<W-3;x++)for(let z=3;z<W-3;z++){
+    let h=H-1;while(h>0&&!B[idx(x,h,z)])h--;
+    if(B[idx(x,h,z)]!==1||hs(x*3+11,z*5+7)>.012)continue;
+    const th=4+Math.floor(hs(x,z)*2);
+    for(let y=1;y<=th;y++)B[idx(x,h+y,z)]=5;
+    for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)for(let dy=th-1;dy<=th+1;dy++){
+      if(Math.abs(dx)===2&&Math.abs(dz)===2&&dy!==th-1)continue;
+      if(dy===th+1&&(Math.abs(dx)>1||Math.abs(dz)>1))continue;
+      if(!B[idx(x+dx,h+dy+1,z+dz)])B[idx(x+dx,h+dy+1,z+dz)]=7;
+    }
+  }
+}
+
+// ---------- rendering ----------
+const canvas=$('c'),renderer=new THREE.WebGLRenderer({canvas,antialias:false});
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(70,1,.05,300);
+scene.fog=new THREE.Fog(0x87ceeb,40,100);
+const mOpq=new THREE.MeshBasicMaterial({map:tex,vertexColors:true,alphaTest:.5});
+const mWat=new THREE.MeshBasicMaterial({map:tex,vertexColors:true,transparent:true,opacity:.7,depthWrite:false});
+const FACE=[
+ {d:[1,0,0],c:[[1,0,1],[1,0,0],[1,1,0],[1,1,1]],s:.8},{d:[-1,0,0],c:[[0,0,0],[0,0,1],[0,1,1],[0,1,0]],s:.8},
+ {d:[0,1,0],c:[[0,1,1],[1,1,1],[1,1,0],[0,1,0]],s:1},{d:[0,-1,0],c:[[0,0,0],[1,0,0],[1,0,1],[0,0,1]],s:.5},
+ {d:[0,0,1],c:[[0,0,1],[1,0,1],[1,1,1],[0,1,1]],s:.9},{d:[0,0,-1],c:[[1,0,0],[0,0,0],[0,1,0],[1,1,0]],s:.9}];
+const UVC=[[0,0],[1,0],[1,1],[0,1]];
+const chunks=[];
+function buildChunk(cx,cz){
+  const L=[{p:[],c:[],u:[],i:[],n:0},{p:[],c:[],u:[],i:[],n:0}];
+  for(let y=0;y<H;y++)for(let z=cz*CS;z<cz*CS+CS;z++)for(let x=cx*CS;x<cx*CS+CS;x++){
+    const t=B[idx(x,y,z)];if(!t)continue;
+    const l=L[t===10?1:0],up=y+1<H?B[idx(x,y+1,z)]:0,dy=(t===10&&!up)?.1:0;
+    FACE.forEach((f,fi)=>{
+      const nx=x+f.d[0],ny=y+f.d[1],nz=z+f.d[2];
+      if(nx<0||nz<0||nx>=W||nz>=W||ny<0)return;
+      const nt=ny>=H?0:B[idx(nx,ny,nz)];
+      if(nt&&(nt===t||!TR[nt]))return;
+      const tile=TF[t][fi===2?0:fi===3?1:2],u0=tile/16+.0004;
+      f.c.forEach((c,k)=>{l.p.push(x+c[0],y+c[1]-(c[1]?dy:0),z+c[2]);l.c.push(f.s,f.s,f.s);l.u.push(u0+UVC[k][0]*(1/16-.0008),UVC[k][1]);});
+      l.i.push(l.n,l.n+1,l.n+2,l.n,l.n+2,l.n+3);l.n+=4;
+    });
+  }
+  const k=cx*NC+cz,old=chunks[k];
+  if(old)old.forEach(m=>{scene.remove(m);m.geometry.dispose();});
+  chunks[k]=L.map((l,j)=>{
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(l.p,3));
+    g.setAttribute('color',new THREE.Float32BufferAttribute(l.c,3));
+    g.setAttribute('uv',new THREE.Float32BufferAttribute(l.u,2));
+    g.setIndex(l.i);
+    const m=new THREE.Mesh(g,j?mWat:mOpq);if(j)m.renderOrder=1;scene.add(m);return m;
+  });
+}
+const buildAll=()=>{for(let a=0;a<NC;a++)for(let b=0;b<NC;b++)buildChunk(a,b);};
+function setBlock(x,y,z,t){
+  if(x<0||z<0||x>=W||y<0||y>=H||z>=W)return;
+  B[idx(x,y,z)]=t;edits[idx(x,y,z)]=t;dirty=true;setStatus('未保存の変更あり');
+  const cx=x>>4,cz=z>>4;buildChunk(cx,cz);
+  if(x%CS===0&&cx>0)buildChunk(cx-1,cz);if(x%CS===CS-1&&cx<NC-1)buildChunk(cx+1,cz);
+  if(z%CS===0&&cz>0)buildChunk(cx,cz-1);if(z%CS===CS-1&&cz<NC-1)buildChunk(cx,cz+1);
+}
+const sel=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004,1.004,1.004)),new THREE.LineBasicMaterial({color:0}));
+sel.visible=false;scene.add(sel);
+
+// ---------- hotbar ----------
+let cur=0;
+function drawBar(){
+  const bar=$('bar');bar.innerHTML='';
+  HB.forEach((t,i)=>{
+    const d=document.createElement('div');d.className='slot'+(i===cur?' on':'');
+    const c=document.createElement('canvas');c.width=c.height=16;
+    const g=c.getContext('2d');g.drawImage(atlas,TF[t][t===1?2:t===5?2:0]*16,0,16,16,0,0,16,16);
+    d.appendChild(c);const b=document.createElement('b');b.textContent=(i+1)%10;d.appendChild(b);bar.appendChild(d);
+  });
+  $('name').textContent=NAME[HB[cur]];
+}
+
+// ---------- player ----------
+const P={x:W/2,y:H,z:W/2,vy:0,yaw:0,pitch:0,ground:false,fly:false};
+const hit=(px,py,pz)=>{
+  for(let x=Math.floor(px-.3);x<=Math.floor(px+.3);x++)for(let y=Math.floor(py);y<=Math.floor(py+1.75);y++)for(let z=Math.floor(pz-.3);z<=Math.floor(pz+.3);z++)if(solid(x,y,z))return true;
+  return false;
+};
+function spawn(){
+  for(let d=0;d<40;d++){
+    const x=W/2+d,z=W/2;let y=H-1;while(y>0&&!B[idx(x,y,z)])y--;
+    if(y>SEA&&B[idx(x,y,z)]!==10){P.x=x+.5;P.z=z+.5;P.y=y+1.01;P.vy=0;return;}
+  }
+  P.x=W/2;P.z=W/2;P.y=H-2;
+}
+const keys={};let mining=false,prog=0,tgt=null;
+addEventListener('keydown',e=>{keys[e.code]=true;
+  if(e.code==='KeyF'&&document.pointerLockElement===canvas)P.fly=!P.fly;
+  if(/^Digit\d$/.test(e.code)){cur=(+e.code.slice(5)+9)%10;drawBar();}
+});
+addEventListener('keyup',e=>keys[e.code]=false);
+addEventListener('wheel',e=>{cur=(cur+(e.deltaY>0?1:9))%10;drawBar();});
+addEventListener('mousemove',e=>{
+  if(document.pointerLockElement!==canvas)return;
+  P.yaw-=e.movementX*.0025;P.pitch=Math.max(-1.55,Math.min(1.55,P.pitch-e.movementY*.0025));
+});
+function ray(){
+  const dir=new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(P.pitch,P.yaw,0,'YXZ'));
+  let prev=null;
+  for(let t=0;t<6;t+=.03){
+    const x=Math.floor(P.x+dir.x*t),y=Math.floor(P.y+1.62+dir.y*t),z=Math.floor(P.z+dir.z*t),b=blockAt(x,y,z);
+    if(b&&b!==10)return{x,y,z,prev};
+    prev=[x,y,z];
+  }
+  return null;
+}
+addEventListener('mousedown',e=>{
+  if(document.pointerLockElement!==canvas)return;
+  if(e.button===0){mining=true;prog=0;return;}
+  if(e.button!==2)return;
+  const r=ray();if(!r||!r.prev)return;
+  const[px,py,pz]=r.prev,i=idx(px,py,pz);
+  if(py<0||py>=H||solid(px,py,pz))return;
+  const old=B[i];B[i]=HB[cur];const bad=hit(P.x,P.y,P.z);B[i]=old;
+  if(!bad)setBlock(px,py,pz,HB[cur]);
+});
+addEventListener('mouseup',e=>{if(e.button===0){mining=false;prog=0;}});
+addEventListener('contextmenu',e=>e.preventDefault());
+
+// ---------- loop ----------
+let last=performance.now(),dayT=.1,infoT=0;
+const DAY=new THREE.Color(0x87ceeb),NIGHT=new THREE.Color(0x070b1e),sky=new THREE.Color(),WATER=new THREE.Color(0x1a3a8a);
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt=Math.min((now-last)/1000,.05);last=now;
+  const locked=document.pointerLockElement===canvas;
+  const wat=blockAt(Math.floor(P.x),Math.floor(P.y+.6),Math.floor(P.z))===10;
+  if(locked){
+    const f=(keys.KeyW?1:0)-(keys.KeyS?1:0),s=(keys.KeyD?1:0)-(keys.KeyA?1:0),len=Math.hypot(f,s)||1;
+    let sp=P.fly?11:(keys.ShiftLeft?6.2:4.3);if(wat&&!P.fly)sp*=.55;
+    const vx=(-Math.sin(P.yaw)*f+Math.cos(P.yaw)*s)/len*sp,vz=(-Math.cos(P.yaw)*f-Math.sin(P.yaw)*s)/len*sp;
+    if(P.fly)P.vy=((keys.Space?1:0)-(keys.ShiftLeft?1:0))*8;
+    else if(wat){P.vy=Math.max(P.vy-8*dt,-3);if(keys.Space)P.vy=3;}
+    else{if(keys.Space&&P.ground){P.vy=8.2;P.ground=false;}P.vy-=26*dt;}
+    const nx=P.x+vx*dt;if(!hit(nx,P.y,P.z))P.x=nx;
+    const nz=P.z+vz*dt;if(!hit(P.x,P.y,nz))P.z=nz;
+    const ny=P.y+P.vy*dt;
+    if(hit(P.x,ny,P.z)){if(P.vy<0)P.ground=true;P.vy=0;}else{P.y=ny;P.ground=false;}
+    if(P.y<-20)spawn();
+  }
+  // mining
+  const r=locked?ray():null;
+  sel.visible=!!r;
+  if(r){
+    sel.position.set(r.x+.5,r.y+.5,r.z+.5);
+    if(!tgt||tgt.x!==r.x||tgt.y!==r.y||tgt.z!==r.z){tgt=r;prog=0;}
+    if(mining){
+      prog+=dt/(HARD[B[idx(r.x,r.y,r.z)]]*.45+.05);
+      if(prog>=1){setBlock(r.x,r.y,r.z,0);prog=0;}
+    }
+  }
+  $('prog').style.display=(mining&&r)?'block':'none';
+  $('prog').firstChild.style.width=Math.min(prog,1)*100+'%';
+  // day / night
+  dayT=(dayT+dt/300)%1;
+  const k=Math.max(0,Math.min(1,Math.sin(dayT*Math.PI*2)*1.6+.55));
+  sky.copy(NIGHT).lerp(DAY,k);
+  const under=blockAt(Math.floor(P.x),Math.floor(P.y+1.62),Math.floor(P.z))===10;
+  if(under){sky.copy(WATER).multiplyScalar(.3+.7*k);scene.fog.near=1;scene.fog.far=18;}else{scene.fog.near=40;scene.fog.far=100;}
+  scene.background=sky;scene.fog.color.copy(sky);
+  mOpq.color.setScalar(.28+.72*k);mWat.color.setScalar(.28+.72*k);
+  cam.position.set(P.x,P.y+1.62,P.z);cam.rotation.set(P.pitch,P.yaw,0,'YXZ');
+  if((infoT+=dt)>.3){infoT=0;$('info').textContent=`XYZ ${P.x.toFixed(1)} ${P.y.toFixed(1)} ${P.z.toFixed(1)} ${P.fly?'[飛行]':''} ${k>.5?'昼':'夜'}`;}
+  renderer.render(scene,cam);
+}
+function resize(){renderer.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();}
+addEventListener('resize',resize);
+
+// ---------- save / load ----------
+async function save(){
+  const data={edits,pos:[P.x,P.y,P.z],yaw:P.yaw,t:dayT};
+  if(!user){try{localStorage.setItem('vc_guest',JSON.stringify(data));dirty=false;setStatus('ブラウザに保存 ✓(ゲスト)');}catch(e){}$('msg').textContent='ログインするとクラウドに保存できます';return;}
+  try{setStatus('保存中...');await db.collection('worlds').doc(user.uid).set({...data,updated:firebase.firestore.FieldValue.serverTimestamp()});dirty=false;setStatus('クラウド保存済み ✓');}
+  catch(e){setStatus('保存失敗');$('msg').textContent='保存エラー: '+e.message;}
+}
+async function load(){
+  genTerrain();edits={};spawn();let v=null;
+  try{
+    if(user){const d=await db.collection('worlds').doc(user.uid).get();if(d.exists)v=d.data();}
+    else{const s=localStorage.getItem('vc_guest');if(s)v=JSON.parse(s);}
+  }catch(e){$('msg').textContent='ロードエラー: '+e.message;}
+  if(v){
+    edits=v.edits||{};for(const k in edits)B[+k]=edits[k];
+    if(v.pos){[P.x,P.y,P.z]=v.pos;P.yaw=v.yaw||0;}if(v.t!=null)dayT=v.t;
+    setStatus('ロード完了 ✓');
+  }else setStatus('新しいワールド');
+  buildAll();
+}
+$('login').onclick=()=>!FB_OK?($('msg').textContent='Firebaseを読み込めません。GitHub Pages等の公開URLで開いてください'):auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e=>$('msg').textContent='ログイン失敗: '+e.message);
+$('logout').onclick=()=>auth&&auth.signOut();
+$('save').onclick=save;
+$('play').onclick=()=>canvas.requestPointerLock();
+document.addEventListener('pointerlockchange',()=>{
+  const l=document.pointerLockElement===canvas;$('menu').style.display=l?'none':'flex';
+  if(!l){mining=false;if(dirty)save();}
+});
+if(!FB_OK){$('msg').textContent='Firebase未接続:ゲストモード(ブラウザ内に保存)';load();}
+else auth.onAuthStateChanged(async u=>{
+  user=u;$('user').textContent=u?(u.displayName||u.email):'ゲスト';
+  $('login').style.display=u?'none':'';$('logout').style.display=u?'':'none';
+  $('msg').textContent=u?'ログイン中:自動保存されます':'ログインするとクラウドに保存されます';
+  await load();
+});
+setInterval(()=>{if(dirty)save();},15000);
+addEventListener('beforeunload',()=>{if(dirty)save();});
+drawBar();resize();requestAnimationFrame(loop);
+</script></body></html>
